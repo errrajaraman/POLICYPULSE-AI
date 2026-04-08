@@ -1,161 +1,141 @@
+import asyncio
 import os
 import sys
-import json
-import random
-from typing import Optional, List, Dict, Any
+import textwrap
+from typing import List, Optional, Dict, Any
+
+from openai import OpenAI
 from envs.social_stream_moderation.environment import SocialStreamModerationEnv
 from envs.social_stream_moderation.models import ModerationAction, State
 
-# Simple Rule-based Fallback Agent
-class RuleBasedAgent:
+# Configuration from Environment Variables
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
+HF_TOKEN = os.getenv("HF_TOKEN")  # No default value as per strict checklist
+
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
+TASK_NAME = os.getenv("TASK_NAME", "clear_cut_moderation")
+BENCHMARK = "PolicyPulseAI"  # Specified by user
+
+# Agent Helper Class for Reasoning and Prediction
+class PolicyPulseAgent:
+    def __init__(self, client: OpenAI, model: str):
+        self.client = client
+        self.model = model
+
     def predict(self, state: State) -> tuple[ModerationAction, str]:
+        """Predicts the moderation action using LLM or rule-based fallback."""
+        
+        # 1. Rule-based Fallback (Internal Logic)
         text = state.text.lower()
-        history = state.user_history_summary
-        
-        # Obvious severe markers
-        severe_keywords = ["destroyed", "subhumans", "eradicated", "track you down", "hurt your family", "kill you", "find and hit", "murder", "search and destroy", "stab", "death at you", "find you"]
-        sexual_keywords = ["explicit", "sexual", "hardcore", "adult videos", "porn"]
-        self_harm_keywords = ["can't take it anymore", "end it all", "cut yourself", "suicide"]
-        
+        severe_keywords = ["destroyed", "subhumans", "eradicated", "track you down", "kill you", "murder", "stab"]
         for kw in severe_keywords:
             if kw in text:
-                return ModerationAction.BAN_USER, f"Rule Match: Severe Violence/Threat detected ('{kw}')"
-        
-        for kw in sexual_keywords:
-            if kw in text:
-                return ModerationAction.BAN_USER, f"Rule Match: Explicit Sexual Content detected ('{kw}')"
-                
-        for kw in self_harm_keywords:
-            if kw in text:
-                return ModerationAction.ESCALATE_HUMAN, f"Rule Match: Self-harm risk detected ('{kw}') - Sending for Human Review"
-                
-        # Mild markers
-        mild_keywords = ["idiot", "shut the hell up", "stupid", "dumbest", "moron", "useless"]
-        for kw in mild_keywords:
-            if kw in text:
-                if history == "no_prior_violations":
-                    return ModerationAction.ALLOW_WITH_WARNING, f"Rule Match: Mild insult ('{kw}'). Account in good standing - Warning issued."
-                else:
-                    return ModerationAction.SOFT_HIDE, f"Rule Match: Repeat mild offense ('{kw}'). User history shows prior violations - Applying Soft Hide."
-                    
-        return ModerationAction.ALLOW, "Rule Match: No policy violations detected. Content is safe."
+                return ModerationAction.BAN_USER, f"Rule Match: Severe threat ('{kw}')"
 
+        # 2. LLM Inference
+        if not self.client.api_key or self.client.api_key == "no_key":
+             return ModerationAction.ALLOW, "LLM Offline: Using basic rule-based safety (HF_TOKEN missing)."
 
-class LLMAgent:
-    def __init__(self, api_base_url: str, model_name: str, api_key: str):
-        from openai import OpenAI
-        self.client = OpenAI(base_url=api_base_url, api_key=api_key)
-        self.model_name = model_name
-        
-    def predict(self, state: State) -> tuple[ModerationAction, str]:
-        prompt = f"""You are an AI content moderator.
-Analyze this post: "{state.text}"
+        prompt = f"""Analyze this social post and select the best action.
+Post: "{state.text}"
 User History: "{state.user_history_summary}"
 
-Policies:
-- ALLOW: Neutral content
-- ALLOW_WITH_WARNING: Mild insults
-- SOFT_HIDE: Borderline
-- ESCALATE_HUMAN: Hate, self-harm
-- BAN_USER: Severe violations
+Actions: ALLOW, ALLOW_WITH_WARNING, SOFT_HIDE, ESCALATE_HUMAN, BAN_USER
 
-Write your thought process and then state the action.
+Reasoning: [Short explanation]
+Action: [ACTION_NAME]"""
 
-Example:
-Reasoning: This contains a violent threat.
-Action: BAN_USER
-
-Provide your response below:"""
-        
         try:
             response = self.client.chat.completions.create(
-                model=self.model_name,
+                model=self.model,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.1
+                temperature=0.1,
+                max_tokens=100
             )
+            content = response.choices[0].message.content or ""
             
-            # Robust check for safety blocks / empty responses
-            choices = getattr(response, "choices", [])
-            if not choices or len(choices) == 0:
-                return ModerationAction.ALLOW, "LLM Error: Request was rejected by the model provider (likely a safety filter block)."
-                
-            content = choices[0].message.content
-            if content is None:
-                return ModerationAction.ALLOW, "LLM Error: Received empty response from model API (Safety violation block or token truncation)."
-                
-            # Escape HTML characters so they don't break the web UI
-            llm_output = content.strip().replace('<', '&lt;').replace('>', '&gt;')
+            # Simple parsing for action
+            for action in ModerationAction:
+                if f"Action: {action.value}" in content or action.value in content.upper().split():
+                    return action, content.strip()
             
-            # Map response to enum robustly, catching common truncations
-            action_mapping = {
-                "ALLOW_WITH_WARNING": ModerationAction.ALLOW_WITH_WARNING,
-                "ESCALATE_HUMAN": ModerationAction.ESCALATE_HUMAN,
-                "BAN_USER": ModerationAction.BAN_USER,
-                "SOFT_HIDE": ModerationAction.SOFT_HIDE,
-                "WARNING": ModerationAction.ALLOW_WITH_WARNING,
-                "ESCALATE": ModerationAction.ESCALATE_HUMAN,
-                "BAN": ModerationAction.BAN_USER,
-                "HIDE": ModerationAction.SOFT_HIDE,
-                "ALLOW": ModerationAction.ALLOW
-            }
-            
-            # The LLM's raw output is passed directly to the UI as the insight
-            for key, action in action_mapping.items():
-                if f"Action: {key}" in llm_output or f"Action: {key}".upper() in llm_output.upper():
-                    return action, llm_output
-            
-            # Fallback if "Action: X" format wasn't strictly followed but the word is just in the text
-            action_str = llm_output.upper()
-            for key, action in action_mapping.items():
-                if key in action_str:
-                    return action, llm_output
-                    
-            return ModerationAction.ALLOW, llm_output
+            return ModerationAction.ALLOW, content.strip()
         except Exception as e:
             return ModerationAction.ALLOW, f"LLM Error: {str(e)}"
 
-def get_agent(api_base_url: Optional[str] = None, model_name: Optional[str] = None, api_key: Optional[str] = None):
-    # Check for LLM config. Fallback to passed arguments, then os.environ
-    base_url = api_base_url or os.environ.get("API_BASE_URL")
-    model = model_name or os.environ.get("MODEL_NAME")
-    token = api_key or os.environ.get("HF_TOKEN", "fake_key")
-    
-    if base_url and model:
-        return LLMAgent(base_url, model, token)
-    else:
-        return RuleBasedAgent()
+# Logging Helpers - STRICT FORMAT
+def log_start(task: str, env: str, model: str) -> None:
+    print(f"[START] task={task} env={env} model={model}", flush=True)
 
-def run_episode(task_name: str, seed: Optional[int] = None):
-    env = SocialStreamModerationEnv()
-    
-    agent = get_agent()
-        
-    state = env.reset(task_name=task_name, seed=seed)
-    
-    # [START] marker - Strictly formatted
-    print(f"[START] task={task_name} | seed={seed}")
-    
-    step_idx = 0
-    done = False
-    
-    while not done:
-        action, reason = agent.predict(state)
-        # Store state ID before step
-        state_id = state.post_id
-        next_state, reward, done, info = env.step(action)
-        
-        # [STEP] marker - Strictly formatted
-        print(f"[STEP] step={step_idx} | state={state_id} | action={action.value} | reward={reward:.4f} | reason={reason}")
-        
-        state = next_state
-        step_idx += 1
-        
-    # [END] marker - Strictly formatted
-    final_score = info.get("final_episode_score", 0.0)
-    print(f"[END] score={final_score:.4f}")
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+    error_val = error if error else "null"
+    done_val = str(done).lower()
+    print(
+        f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}",
+        flush=True,
+    )
 
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
+
+def get_agent(api_base_url: Optional[str] = None, model_name: Optional[str] = None, api_key: Optional[str] = None) -> PolicyPulseAgent:
+    """Helper for app.py to get an agent instance with optional overrides."""
+    base = api_base_url or API_BASE_URL
+    model = model_name or MODEL_NAME
+    key = api_key or HF_TOKEN
+    client = OpenAI(base_url=base, api_key=key or "no_key")
+    return PolicyPulseAgent(client, model)
+
+async def main() -> None:
+    # Initialize OpenAI Client
+    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN or "no_key")
+    agent = PolicyPulseAgent(client, MODEL_NAME)
+
+    # Initialize Environment via docker pattern
+    env = await SocialStreamModerationEnv.from_docker_image(LOCAL_IMAGE_NAME)
+    
+    # CLI Overrides for testing
+    task = sys.argv[1] if len(sys.argv) > 1 else TASK_NAME
+    seed = int(sys.argv[2]) if len(sys.argv) > 2 else 42
+
+    history_rewards: List[float] = []
+    steps_taken = 0
+    final_score = 0.0
+    success = False
+
+    log_start(task=task, env=BENCHMARK, model=MODEL_NAME)
+
+    try:
+        state = await env.reset(task_name=task, seed=seed)
+        
+        while state is not None:
+            # Predict
+            action, reason = agent.predict(state)
+            
+            # Step
+            next_state, reward, done, info = await env.step(action)
+            
+            steps_taken += 1
+            history_rewards.append(reward)
+            
+            # Log step immediately after env.step()
+            log_step(step=steps_taken, action=action.value, reward=reward, done=done, error=None)
+            
+            state = next_state
+            if done:
+                final_score = info.get("final_episode_score", sum(history_rewards)/len(history_rewards))
+                break
+
+        # success criteria (default > 0.1 normalized score)
+        success = final_score >= 0.1
+
+    except Exception as e:
+        # Emit END even on exception
+        pass
+    finally:
+        log_end(success=success, steps=steps_taken, score=final_score, rewards=history_rewards)
 
 if __name__ == "__main__":
-    task = sys.argv[1] if len(sys.argv) > 1 else "clear_cut_moderation"
-    seed = int(sys.argv[2]) if len(sys.argv) > 2 else 42
-    run_episode(task, seed)
+    asyncio.run(main())

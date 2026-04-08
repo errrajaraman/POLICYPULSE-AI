@@ -18,7 +18,13 @@ class SocialStreamModerationEnv:
         self.episode_history: List[Dict[str, Any]] = []
         self.policy_mode = PolicyMode.NORMAL
         
-    def reset(self, task_name: str = "clear_cut_moderation", seed: Optional[int] = None) -> State:
+    @classmethod
+    async def from_docker_image(cls, image_name: Optional[str] = None):
+        """Standard OpenEnv V4 interface for initializing the environment."""
+        # For local project structure, we just return an instance.
+        return cls()
+        
+    async def reset(self, task_name: str = "clear_cut_moderation", seed: Optional[int] = None) -> State:
         """Resets the environment with a given task and seed."""
         if seed is not None:
             random.seed(seed)
@@ -61,7 +67,7 @@ class SocialStreamModerationEnv:
             total_steps=len(self.episode_posts)
         )
         
-    def step(self, action: ModerationAction) -> Tuple[Optional[State], float, bool, Dict[str, Any]]:
+    async def step(self, action: ModerationAction) -> Tuple[Optional[State], float, bool, Dict[str, Any]]:
         """Processes one moderation action."""
         if self.done:
             raise RuntimeError("Episode is already finished. Call reset() first.")

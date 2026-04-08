@@ -41,4 +41,4 @@ schemas:
 
 paths:
   inference: ./inference.py
-  app: ./app.py
+  app: ./server/app.py
