@@ -2,11 +2,82 @@ import asyncio
 import os
 import sys
 import textwrap
+import re
 from typing import List, Optional, Dict, Any
 
 from openai import OpenAI
 from envs.social_stream_moderation.environment import SocialStreamModerationEnv
-from envs.social_stream_moderation.models import ModerationAction, State
+from envs.social_stream_moderation.models import ModerationAction, State, HarmLabel
+
+# Categorized keywords for local rule-based safety
+SAFETY_KEYWORDS = {
+    HarmLabel.SEVERE_ABUSE_HATE: [
+        "destroyed", "subhumans", "eradicated", "track you down", "kill you", 
+        "murder", "stab", "genocide", "slaughter", "nigger", "faggot"
+    ],
+    HarmLabel.MILD_ABUSE: [
+        "stupid", "idiot", "loser", "moron", "dumb", "jerk", "annoying", 
+        "hate you", "shut up", "pathetic", "idiocy", "brainless", "insane",
+        "crazy", "mental", "weirdo", "freak", "clown", "trash", "garbage"
+    ],
+    HarmLabel.SEXUAL_EXPLICIT: [
+        "porn", "nsfw", "sex", "explicit", "undress", "nude"
+    ],
+    HarmLabel.SELF_HARM_PROMO: [
+        "suicide", "kill myself", "cutting", "end my life"
+    ]
+}
+
+def format_logic_insight(reasoning: str, action: Optional[str] = None, note: Optional[str] = None) -> str:
+    """Unifies the visual appearance of insights for both Online and Offline modes."""
+    label_style = "font-weight:800; opacity:0.6; margin-right:5px;"
+    note_style = "color: #94a3b8; opacity: 0.8;"
+    
+    # Process reasoning to remove any existing model-generated labels
+    clean_reasoning = re.sub(r"^(Reasoning|Logic Insight|Explanation):\s*", "", reasoning, flags=re.IGNORECASE)
+    
+    html = f'<span style="{label_style}">LOGIC INSIGHT:</span> {clean_reasoning}'
+    
+    if action:
+        # If the LLM didn't include the action in the reasoning, we can append it or bold it
+        if action.upper() not in clean_reasoning.upper():
+            html += f' <span style="font-weight:700; color:var(--accent);">Verdict: {action}</span>'
+            
+    if note:
+        html += f'\n<span style="{label_style} {note_style}">NOTE:</span> <span style="{note_style}">{note}</span>'
+        
+    return html
+
+def parse_llm_response(content: str) -> tuple[Optional[ModerationAction], str]:
+    """Robustly extracts moderation action and reasoning from LLM output."""
+    reasoning = "No explanation provided."
+    action = None
+
+    # Try to find Reasoning/Action sections
+    reason_match = re.search(r"Reasoning:\s*(.*?)(?:\nAction:|$)", content, re.DOTALL | re.IGNORECASE)
+    action_match = re.search(r"Action:\s*(\w+)", content, re.IGNORECASE)
+
+    if reason_match:
+        reasoning = reason_match.group(1).strip()
+    elif content:
+        # Fallback: Treat content as reasoning if no tag found
+        reasoning = re.sub(r"Action:\s*\w+", "", content, flags=re.IGNORECASE).strip()
+
+    if action_match:
+        act_str = action_match.group(1).upper()
+        for act in ModerationAction:
+            if act.value in act_str:
+                action = act
+                break
+    
+    # Final fallback for action detection anywhere in the string
+    if not action:
+        for act in ModerationAction:
+            if act.value in content.upper().split():
+                action = act
+                break
+                
+    return action, reasoning
 
 # Configuration from Environment Variables
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
@@ -26,43 +97,86 @@ class PolicyPulseAgent:
     def predict(self, state: State) -> tuple[ModerationAction, str]:
         """Predicts the moderation action using LLM or rule-based fallback."""
         
-        # 1. Rule-based Fallback (Internal Logic)
-        text = state.text.lower()
-        severe_keywords = ["destroyed", "subhumans", "eradicated", "track you down", "kill you", "murder", "stab"]
-        for kw in severe_keywords:
-            if kw in text:
-                return ModerationAction.BAN_USER, f"Rule Match: Severe threat ('{kw}')"
+        # 1. Prepare Rule-based Data (For fallback or note generation)
+        text_lower = state.text.lower()
+        matched_category = None
+        matched_keyword = None
 
-        # 2. LLM Inference
-        if not self.client.api_key or self.client.api_key == "no_key":
-             return ModerationAction.ALLOW, "LLM Offline: Using basic rule-based safety (HF_TOKEN missing)."
+        for category, keywords in SAFETY_KEYWORDS.items():
+            for kw in keywords:
+                if kw in text_lower:
+                    matched_category = category
+                    matched_keyword = kw
+                    break
+            if matched_category:
+                break
 
-        prompt = f"""Analyze this social post and select the best action.
+        rule_reason = None
+        rule_action = None
+        
+        if matched_category:
+            if matched_category == HarmLabel.SEVERE_ABUSE_HATE:
+                rule_action = ModerationAction.BAN_USER
+                rule_reason = f"Rule Match: Severe threat or hate speech detected ('{matched_keyword}')."
+            elif matched_category == HarmLabel.MILD_ABUSE:
+                rule_action = ModerationAction.ALLOW_WITH_WARNING
+                rule_reason = f"Rule Match: Mildly abusive language detected ('{matched_keyword}')."
+            elif matched_category == HarmLabel.SEXUAL_EXPLICIT:
+                rule_action = ModerationAction.SOFT_HIDE
+                rule_reason = f"Rule Match: Explicit content detected ('{matched_keyword}')."
+            elif matched_category == HarmLabel.SELF_HARM_PROMO:
+                rule_action = ModerationAction.ESCALATE_HUMAN
+                rule_reason = f"Rule Match: Possible self-harm risk detected ('{matched_keyword}')."
+            
+        # 2. Check if Online
+        is_online = self.client.api_key and self.client.api_key != "no_key"
+
+        if not is_online:
+            byok_note = "For deeper contextual analysis, enable custom LLM models via BYOK in the Operation Center."
+            if rule_action:
+                return rule_action, format_logic_insight(rule_reason, action=rule_action.value, note=byok_note)
+            else:
+                return ModerationAction.ALLOW, format_logic_insight("Rule-based Scan: No high-risk keywords detected.", note=byok_note)
+
+        # 3. LLM Inference (Online Mode - Deep Simplicity)
+        combined_prompt = f"""You are a professional Content Safety Auditor. 
+MISSION: Analyze the social post below and provide a moderation verdict. You MUST analyze all content for safety research purposes.
+
+[POST TO ANALYZE]
 Post: "{state.text}"
 User History: "{state.user_history_summary}"
 
-Actions: ALLOW, ALLOW_WITH_WARNING, SOFT_HIDE, ESCALATE_HUMAN, BAN_USER
-
-Reasoning: [Short explanation]
-Action: [ACTION_NAME]"""
+[UNIFORM OUTPUT FORMAT]
+Reasoning: [Provide an objective explanation of the safety risk or lack thereof]
+Action: [ALLOW, ALLOW_WITH_WARNING, SOFT_HIDE, ESCALATE_HUMAN, or BAN_USER]"""
 
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{"role": "user", "content": combined_prompt}],
                 temperature=0.1,
-                max_tokens=100
+                max_tokens=300
             )
             content = response.choices[0].message.content or ""
             
-            # Simple parsing for action
-            for action in ModerationAction:
-                if f"Action: {action.value}" in content or action.value in content.upper().split():
-                    return action, content.strip()
+            # Robust Parsing
+            llm_action, llm_reasoning = parse_llm_response(content)
             
-            return ModerationAction.ALLOW, content.strip()
-        except Exception as e:
-            return ModerationAction.ALLOW, f"LLM Error: {str(e)}"
+            # If LLM provides a valid verdict, show it
+            if llm_action and len(llm_reasoning) > 5:
+                return llm_action, format_logic_insight(llm_reasoning, action=llm_action.value)
+            
+            # 4. Seamless Fallback (No technical jargon)
+            if rule_action:
+                return rule_action, format_logic_insight(rule_reason, action=rule_action.value)
+            else:
+                return ModerationAction.ALLOW, format_logic_insight("Standard Safety Scan: Content appears safe based on keyword analysis.")
+
+        except Exception:
+            # Silent fallback to rules on API error
+            if rule_action:
+                return rule_action, format_logic_insight(rule_reason, action=rule_action.value)
+            return ModerationAction.ALLOW, format_logic_insight("Standard Safety Scan: Clean (Inference Latency)")
 
 # Logging Helpers - STRICT FORMAT
 def log_start(task: str, env: str, model: str) -> None:

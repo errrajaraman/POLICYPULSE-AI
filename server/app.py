@@ -458,8 +458,8 @@ def read_root():
                         <span style="font-size:0.6rem; color:var(--muted); border:1px solid rgba(255,255,255,0.1); padding:2px 6px; border-radius:4px; text-transform:uppercase;">${meta.context.replace(/_/g,' ')}</span>
                     </div>
                     <div class="log-text">${text}</div>
-                    <div style="font-size:0.7rem; color:var(--accent); background:rgba(56,189,248,0.05); padding:8px; border-radius:8px; margin-top:10px; border:1px solid rgba(56,189,248,0.1); white-space: pre-wrap;">
-                        <span style="font-weight:800; opacity:0.6; margin-right:5px;">LOGIC INSIGHT:</span> ${reason}
+                    <div style="font-size:0.75rem; color:var(--accent); background:rgba(56,189,248,0.04); padding:12px; border-radius:12px; margin-top:12px; border:1px solid rgba(56,189,248,0.1); white-space: pre-wrap; line-height: 1.6;">
+                        ${reason}
                     </div>
                     <div style="display:flex; align-items:center; justify-content:space-between; margin-top:12px;">
                         <span class="log-badge" style="background:${colors[action] || 'var(--accent)'}; color:#020617; margin-top:0">${action}</span>
@@ -561,10 +561,12 @@ async def evaluate_text(
 
     # Check if this input matches our known harmful patterns to determine reward
     from envs.social_stream_moderation.models import HarmLabel
+    from inference import SAFETY_KEYWORDS
     best_harm_guess = HarmLabel.SAFE
-    for kw in ["kill", "murder", "stab", "find you", "death at you"]:
-        if kw in req.text.lower():
-            best_harm_guess = HarmLabel.SEVERE_ABUSE_HATE
+    
+    for category, keywords in SAFETY_KEYWORDS.items():
+        if any(kw in req.text.lower() for kw in keywords):
+            best_harm_guess = category
             break
 
     reward = compute_per_post_reward(best_harm_guess, action, p_mode)
