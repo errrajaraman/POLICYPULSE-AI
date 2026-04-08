@@ -229,7 +229,6 @@ def read_root():
                                 </select>
                             </div>
                         </div>
-                        <button class="btn btn-primary" id="btn-lab-run">RUN MODERATION</button>
                     </div>
 
 
@@ -256,7 +255,8 @@ def read_root():
                         </div>
                     </div>
 
-                    <button class="btn btn-secondary" id="btn-global-clear" style="margin-top:auto">PURGE LOGS</button>
+                    <button class="btn btn-primary" id="btn-lab-run" style="margin-top:20px">RUN MODERATION</button>
+                    <button class="btn btn-secondary" id="btn-global-clear" style="margin-top:10px">PURGE LOGS</button>
 
                 </div>
             </div>
