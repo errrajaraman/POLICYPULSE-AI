@@ -1,15 +1,26 @@
 name: SocialStreamModerationEnv
 version: 1.0.0
+graders:
+  - name: basic_safety_grader
+    description: "Grader for basic safety checks"
+  - name: context_nuance_grader
+    description: "Grader for contextual and sarcastic content"
+  - name: fairness_bias_grader
+    description: "Grader for fairness and bias parity"
+
 tasks:
   - name: clear_cut_moderation
     difficulty: easy
     description: "Moderate a stream of social posts with obvious violations and safe content."
+    grader: basic_safety_grader
   - name: nuanced_sarcastic
     difficulty: medium
     description: "Handle sarcastic content and quotes of harmful material with condemnation."
+    grader: context_nuance_grader
   - name: policy_fairness
     difficulty: hard
     description: "Ensure fairness across user groups and adhere to stricter policy regimes."
+    grader: fairness_bias_grader
 
 schemas:
   state:
@@ -37,7 +48,7 @@ schemas:
       ground_truth_label: { type: string }
       action_taken: { type: string }
       reward: { type: number }
-      final_episode_score: { type: number }
+      score: { type: number }
 
 paths:
   inference: ./inference.py

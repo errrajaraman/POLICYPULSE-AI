@@ -239,7 +239,7 @@ async def main() -> None:
             
             state = next_state
             if done:
-                final_score = info.get("final_episode_score", sum(history_rewards)/len(history_rewards))
+                final_score = info.get("score", sum(history_rewards)/len(history_rewards))
                 break
 
         # success criteria (default > 0.1 normalized score)

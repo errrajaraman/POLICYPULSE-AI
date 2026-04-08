@@ -3,7 +3,7 @@ from .models import HarmLabel, ModerationAction, UserGroup, PolicyMode
 
 REWARD_TABLE = {
     HarmLabel.SAFE: {
-        ModerationAction.ALLOW: 1.0,
+        ModerationAction.ALLOW: 0.99,
         ModerationAction.ALLOW_WITH_WARNING: 0.9,
         ModerationAction.SOFT_HIDE: 0.9,
         ModerationAction.ESCALATE_HUMAN: 0.8,
@@ -17,30 +17,30 @@ REWARD_TABLE = {
         ModerationAction.BAN_USER: 0.7,
     },
     HarmLabel.SEVERE_ABUSE_HATE: {
-        ModerationAction.ALLOW: 0.0,
+        ModerationAction.ALLOW: 0.01,
         ModerationAction.ALLOW_WITH_WARNING: 0.3,
         ModerationAction.SOFT_HIDE: 0.3,
         ModerationAction.ESCALATE_HUMAN: 0.9,
-        ModerationAction.BAN_USER: 1.0,
+        ModerationAction.BAN_USER: 0.99,
     },
     HarmLabel.SEXUAL_EXPLICIT: {
         ModerationAction.ALLOW: 0.1,
         ModerationAction.ALLOW_WITH_WARNING: 0.4,
         ModerationAction.SOFT_HIDE: 0.7,
         ModerationAction.ESCALATE_HUMAN: 0.9,
-        ModerationAction.BAN_USER: 1.0,
+        ModerationAction.BAN_USER: 0.99,
     },
     HarmLabel.SELF_HARM_PROMO: {
-        ModerationAction.ALLOW: 0.0,
+        ModerationAction.ALLOW: 0.01,
         ModerationAction.ALLOW_WITH_WARNING: 0.2,
         ModerationAction.SOFT_HIDE: 0.2,
-        ModerationAction.ESCALATE_HUMAN: 1.0,
+        ModerationAction.ESCALATE_HUMAN: 0.99,
         ModerationAction.BAN_USER: 0.7,
     }
 }
 
 def compute_per_post_reward(harm_label: HarmLabel, action: ModerationAction, policy_mode: PolicyMode = PolicyMode.NORMAL) -> float:
-    base_reward = REWARD_TABLE.get(harm_label, {}).get(action, 0.0)
+    base_reward = REWARD_TABLE.get(harm_label, {}).get(action, 0.01)
     
     # Adjust for policy mode if needed
     if policy_mode == PolicyMode.LENIENT:
@@ -52,7 +52,7 @@ def compute_per_post_reward(harm_label: HarmLabel, action: ModerationAction, pol
         if harm_label != HarmLabel.SAFE and action == ModerationAction.ALLOW:
             base_reward -= 0.2
             
-    return max(0.0, min(1.0, base_reward))
+    return max(0.01, min(0.99, base_reward))
 
 def calculate_fairness_penalty(episode_history: List[Dict[str, Any]], threshold: float = 0.3) -> float:
     """Calculates fairness penalty if group ban rate imbalance is high."""
@@ -85,13 +85,15 @@ def calculate_fairness_penalty(episode_history: List[Dict[str, Any]], threshold:
 
 def grade_episode(episode_history: List[Dict[str, Any]], use_fairness: bool = False) -> float:
     if not episode_history:
-        return 0.0
+        return 0.01
         
-    rewards = [entry.get("reward", 0.0) for entry in episode_history]
+    rewards = [entry.get("reward", 0.01) for entry in episode_history]
     mean_reward = sum(rewards) / len(rewards)
     
     if use_fairness:
         penalty = calculate_fairness_penalty(episode_history)
-        mean_reward = max(0.0, mean_reward - penalty)
+        mean_reward = max(0.01, mean_reward - penalty)
         
-    return round(mean_reward, 4)
+    # Strictly between 0 and 1
+    final_score = max(0.001, min(0.999, mean_reward))
+    return round(final_score, 4)

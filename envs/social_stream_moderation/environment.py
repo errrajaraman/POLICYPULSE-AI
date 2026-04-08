@@ -112,6 +112,6 @@ class SocialStreamModerationEnv:
         
         if self.done:
             final_score = grade_episode(self.episode_history, self.current_task.use_fairness)
-            info["final_episode_score"] = final_score
+            info["score"] = final_score
             
         return next_state, reward, self.done, info
