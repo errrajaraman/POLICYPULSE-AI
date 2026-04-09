@@ -40,3 +40,8 @@ TASKS = {
         grader_id="fairness_bias_grader"
     )
 }
+
+# Legacy aliases used by validate_submission.py and inference.py CLI
+TASKS["clear_cut_moderation"] = TASKS["Task 1: Basic Safety"]
+TASKS["nuanced_sarcastic"] = TASKS["Task 2: Context & Nuance"]
+TASKS["policy_fairness"] = TASKS["Task 3: Fairness & Bias"]
