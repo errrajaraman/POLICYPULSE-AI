@@ -93,11 +93,14 @@ class SocialStreamModerationEnv:
         # Compute reward
         reward = compute_per_post_reward(current_post.harm_label, action, self.policy_mode)
         
-        # Log to history for final grading
+        # Log to history for final grading (include context_type and
+        # policy_mode so context-aware graders can use them)
         self.episode_history.append({
             "post_id": current_post.post_id,
             "harm_label": current_post.harm_label,
             "user_group": current_post.user_group,
+            "context_type": current_post.context_type,
+            "policy_mode": self.policy_mode,
             "action": action,
             "reward": reward
         })
