@@ -757,7 +757,7 @@ def read_root():
 
 
 @app.post("/reset", tags=["🤖 Automated Benchmarking"], summary="1. Initialize Environment (Task Selection)")
-async def reset_env(req: ResetRequest = Body(...)):
+async def reset_env(req: ResetRequest = Body(default=ResetRequest())):
     """Resets the environment with a given task and seed. This must be the first step in any benchmarking track."""
     try:
         # Access the enum value (the human-readable name)
